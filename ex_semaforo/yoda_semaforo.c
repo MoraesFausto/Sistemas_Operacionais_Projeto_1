@@ -58,8 +58,9 @@ pthread_mutex_t queue_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 // Constantes
 #define MAX_PADAWANS 10
-#define MAX_PUBLIC 5
-#define MAX_SALAO 5 // Máximo de Padawans no salão ao mesmo tempo
+#define MAX_PUBLIC 7
+#define MAX_SALAO 5
+#define MAX_PUBLIC_SALAO 5
 
 // Semáforos
 sem_t sem_padawans;  // Controle de acesso ao salão para Padawans
@@ -80,6 +81,7 @@ int start_test_id = -1;
 
 // Contadores globais
 int padawans_in_room = 0;
+int spectators_in_room = 0;
 int processed_padawans = 0;
 
 int padawans_ids[MAX_PADAWANS];
@@ -90,12 +92,6 @@ Queue padawan_queue;
 void* yoda_actions(void* arg) {
     printf("Yoda está se preparando para as avaliações...\n");
     int in_room_padawan_ids[MAX_SALAO];
-            // Abre para o publico
-    for(int i = 0; i < MAX_PUBLIC; i++) {
-    printf("Yoda está liberando publico...\n");
-        sem_post(&sem_public);
-    }
-
     while (processed_padawans < MAX_PADAWANS) {
         // Aguardando que o salão encha
         printf("Yoda está aguardando o salão encher para iniciar os testes...\n");
@@ -134,6 +130,15 @@ void* yoda_actions(void* arg) {
             printf("Yoda anuncia: Padawan_%d %s.\n", in_room_padawan_ids[i], (aprovado ? "aprovado! Cortando a trança" : "reprovado. Apenas cumprimenta Yoda"));
             processed_padawans++;
         }
+        
+        for (int i = 0; i < MAX_SALAO; i++) {
+            sem_post(&sem_padawans); // Libera vagas para novos Padawans
+        }
+        for (int i = 0; i < MAX_PUBLIC_SALAO; i++) {
+            sem_post(&sem_public); // Libera vagas para novos espectadores
+        }
+
+        printf("Yoda permite a entrada de novos participantes.\n");
 
         padawans_in_room = 0;
         pthread_mutex_unlock(&room_mutex);
@@ -149,13 +154,6 @@ void* yoda_actions(void* arg) {
         printf("Yoda aguarda para a próxima sessão...\n");
         sleep(3); // Simula o intervalo
         printf("Yoda permite a entrada dos novos padawans...\n");
-        
-
-        // Libera o semáforo para permitir que a próxima leva entre
-        for (int i = 0; i < MAX_SALAO; i++) {
-            sem_post(&sem_padawans); // Libera o próximo grupo de Padawans
-            sem_post(&sem_public); // Libera o próximo grupo de espectadores
-        }
 
     }
 
@@ -215,18 +213,21 @@ void* padawan_actions(void* arg) {
 // Funções dos espectadores
 void* public_actions(void* arg) {
     int id = *(int*)arg;
-    while(finished_test == 0) {
-        pthread_mutex_lock(&finished_test_mutex);  // Protege o acesso à variável `released_id`
-        pthread_cond_wait(&finished_test_cond, &finished_test_mutex);
-        pthread_mutex_unlock(&finished_test_mutex);  // Libera o mutex
-    }
-    printf("Espectador_%d chega ao salão.\n", id);
-    sem_wait(&sem_public); // Aguarda permissão para entrar
-    printf("Espectador_%d está assistindo aos testes.\n", id);
-    sleep((rand() % 3) + 1); // Simula tempo assistindo
-    printf("Espectador_%d decide sair do salão.\n", id);
-    sem_post(&sem_public); // Libera a vaga para outro espectador
+    printf("Espectador_%d chega ao salão e aguarda entrada...\n", id);
 
+    sem_wait(&sem_public); // Aguarda permissão para entrar
+
+    pthread_mutex_lock(&room_mutex);
+    spectators_in_room++;
+    printf("Espectador_%d entra no salão. Total de espectadores no salão: %d.\n", id, spectators_in_room);
+    pthread_mutex_unlock(&room_mutex);
+
+    sleep((rand() % 3) + 1); // Simula tempo assistindo
+
+    pthread_mutex_lock(&room_mutex);
+    spectators_in_room--;
+    printf("Espectador_%d sai do salão. Total de espectadores no salão: %d.\n", id, spectators_in_room);
+    pthread_mutex_unlock(&room_mutex);
     free(arg);
     return NULL;
 }
@@ -239,7 +240,7 @@ int main() {
 
     // Inicializa semáforos e mutex
     sem_init(&sem_padawans, 0, MAX_SALAO); // Máximo de Padawans no salão
-    sem_init(&sem_public, 0, 0); // Máximo de espectadores
+    sem_init(&sem_public, 0, MAX_PUBLIC_SALAO); // Máximo de espectadores
     sem_init(&sem_yoda, 0, 0);            // Sincronização com Yoda
     init_queue(&padawan_queue, MAX_PADAWANS);
 
@@ -248,6 +249,13 @@ int main() {
     // Cria thread de Yoda
     pthread_create(&yoda, NULL, yoda_actions, NULL);
 
+    // Cria threads do público
+    for (int i = 0; i < MAX_PUBLIC; i++) {
+        int* id = malloc(sizeof(int));
+        *id = i + 1;
+        pthread_create(&public_threads[i], NULL, public_actions, id);
+    }
+
     // Cria threads de Padawans
     for (int i = 0; i < MAX_PADAWANS; i++) {
         int* id = malloc(sizeof(int));
@@ -255,13 +263,6 @@ int main() {
         padawans_ids[i] = *id;
         testing_padawans[i] = 1;
         pthread_create(&padawans[i], NULL, padawan_actions, id);
-    }
-
-    // Cria threads do público
-    for (int i = 0; i < MAX_PUBLIC; i++) {
-        int* id = malloc(sizeof(int));
-        *id = i + 1;
-        pthread_create(&public_threads[i], NULL, public_actions, id);
     }
 
     // Aguarda finalização
